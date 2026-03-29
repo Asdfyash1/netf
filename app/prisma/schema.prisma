@@ -1,0 +1,26 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // The 'url' property is no longer supported directly in schema files for Prisma 7.
+  // Connection URLs for Migrate should be configured in prisma.config.ts or passed to PrismaClient constructor.
+  // See https://pris.ly/d/config-datasource and https://pris.ly/d/prisma7-client-config
+  provider = "sqlite"
+}
+
+model Cookie {
+  id           String   @id @default(cuid())
+  email        String?
+  netflixId    String   @unique
+  rawCookie    String
+  isValid      Boolean  @default(false)
+  country      String?
+  plan         String?
+  checkedAt    DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}

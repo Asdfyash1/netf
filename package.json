@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "postinstall": "node unzip.js",
-    "build": "cd app && npx prisma generate && next build",
-    "start": "cd app && next start -p $PORT"
+    "postinstall": "node unzip.js && cd app && npm install",
+    "build": "cd app && npx prisma generate && npm run build",
+    "start": "cd app && npm start -- -p $PORT"
   },
   "dependencies": {
     "adm-zip": "^0.5.16"
