@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "postinstall": "node unzip.js",
-    "build": "cd app && npx prisma generate && next build",
+    "build": "cd app && npm install --save better-sqlite3 @prisma/adapter-better-sqlite3 && npx prisma generate && next build",
     "start": "cd app && next start -p $PORT"
   },
   "dependencies": {
