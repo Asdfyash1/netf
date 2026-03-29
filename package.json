@@ -1,0 +1,13 @@
+{
+  "name": "zip-deployer",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "postinstall": "node unzip.js",
+    "build": "cd app && npx prisma generate && next build",
+    "start": "cd app && next start -p $PORT"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16"
+  }
+}
