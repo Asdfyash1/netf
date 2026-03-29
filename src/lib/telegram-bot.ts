@@ -70,7 +70,7 @@ async function checkSingleCookie(cookie: ParsedCookie): Promise<{
       }
       if (!cookie.nftoken) {
         cookie.nftoken = generateNfToken(cookie.netflixId);
-        cookie.nftokenUrl = `https://www.netflix.com/browse?nftoken=${cookie.nftoken}`;
+        (cookie as any).nftokenUrl = `https://www.netflix.com/browse?nftoken=${cookie.nftoken}`;
       }
       return { valid: true, details: cookie }
     }
