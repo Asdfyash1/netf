@@ -7,9 +7,7 @@ generator client {
 
 datasource db {
   provider = "sqlite"
-  // The 'url' property is no longer supported directly in schema files for Prisma 7.
-  // Connection URLs for Migrate should be configured in prisma.config.ts or passed to PrismaClient constructor.
-  // See https://pris.ly/d/config-datasource and https://pris.ly/d/prisma7-client-config
+  url      = env("DATABASE_URL")
 }
 
 model Cookie {
