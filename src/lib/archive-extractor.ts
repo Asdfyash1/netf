@@ -33,7 +33,7 @@ function extractFromZip(buffer: Buffer, originalName: string, depth: number = 0)
       const fileName = entry.entryName.toLowerCase();
       const fullFileName = entry.entryName;
       
-      // Check if this is a nested ZIP archive
+      // Check if this is a nested archive (ZIP, RAR - RAR will just be skipped as we can't extract it)
       if (fileName.endsWith('.zip')) {
         console.log(`Found nested ZIP: ${fullFileName}`);
         try {
@@ -52,17 +52,31 @@ function extractFromZip(buffer: Buffer, originalName: string, depth: number = 0)
       }
       
       // Extract text files - expanded list of extensions
-      const textExtensions = ['.txt', '.json', '.csv', '.log', '.xml', '.html', '.htm', '.text', '.cookie', '.cookies'];
+      const textExtensions = [
+        '.txt', '.json', '.csv', '.log', '.xml', '.html', '.htm', 
+        '.text', '.cookie', '.cookies', '.ini', '.cfg', '.data',
+        '.md', '.yaml', '.yml', '.js', '.ts', '.py', '.css', '.sql',
+        '.env', '.gitignore', '.sh', '.bat', '.ps1'
+      ];
+      
       const isTextFile = textExtensions.some(ext => fileName.endsWith(ext)) || 
-                         fileName.indexOf('.') === -1; // Files without extension might be text
+                         fileName.indexOf('.') === -1 || // Files without extension might be text
+                         fileName === 'cookies' ||
+                         fileName.includes('cookie') ||
+                         fileName.includes('config');
       
       if (isTextFile) {
         try {
           const content = entry.getData().toString('utf-8');
-          files.push({
-            name: `${originalName}/${fullFileName}`,
-            content: content
-          });
+          // Basic check to see if it's actually readable text and not binary
+          // Check for null bytes which usually indicate binary
+          if (!content.includes('\0')) {
+            console.log(`Extracted text file: ${fullFileName}`);
+            files.push({
+              name: `${originalName}/${fullFileName}`,
+              content: content
+            });
+          }
         } catch (e) {
           console.error(`Failed to read ${fullFileName}:`, e);
         }
@@ -70,7 +84,10 @@ function extractFromZip(buffer: Buffer, originalName: string, depth: number = 0)
     }
   } catch (error) {
     console.error('ZIP extraction error:', error);
-    throw new Error(`Failed to extract ZIP: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    // Don't throw for nested files, just skip and return what we found
+    if (depth === 0) {
+      throw new Error(`Failed to extract ZIP: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   }
   
   return files;
@@ -80,15 +97,17 @@ function extractFromZip(buffer: Buffer, originalName: string, depth: number = 0)
  * Detect file type based on magic bytes
  */
 function detectFileType(buffer: Buffer): 'zip' | 'rar' | 'unknown' {
-  // RAR magic bytes: RAR!\x1a\x07
+  if (!buffer || buffer.length < 4) return 'unknown';
+
+  // RAR magic bytes: RAR!\x1a\x07 (v1.5) or RAR!\x1a\x07\x00 (v5.0)
   if (buffer.length >= 7 && 
       buffer[0] === 0x52 && buffer[1] === 0x61 && buffer[2] === 0x72 && 
       buffer[3] === 0x21 && buffer[4] === 0x1a && buffer[5] === 0x07) {
     return 'rar';
   }
   
-  // ZIP magic bytes: PK\x03\x04 or PK\x05\x06 (empty) or PK\x07\x08
-  if (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b) {
+  // ZIP magic bytes: PK\x03\x04
+  if (buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04) {
     return 'zip';
   }
   
@@ -105,12 +124,12 @@ export function extractArchive(buffer: Buffer, fileName: string): ExtractedFile[
   
   console.log(`extractArchive called: fileName=${fileName}, detectedType=${detectedType}, bufferSize=${buffer.length}`);
   
-  // RAR not supported on Vercel
+  // RAR not supported on serverless generally without native binaries
   if (lowerName.endsWith('.rar') || detectedType === 'rar') {
-    console.log(`RAR extraction not supported on serverless: ${fileName}`);
+    console.log(`RAR extraction not supported: ${fileName}`);
     return [{
       name: `${fileName}/error.txt`,
-      content: `RAR files are not supported on this deployment. Please extract the RAR file on your computer and upload the contents as a ZIP file.`
+      content: `⚠️ RAR files cannot be extracted directly by the bot. \n\n💡 TIP: Please extract the RAR on your device and send the .txt files or zip them into a .zip file and send again.`
     }];
   }
   
