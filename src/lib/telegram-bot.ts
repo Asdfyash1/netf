@@ -262,15 +262,26 @@ async function sendValidCookiesFile(chatId: number, cookies: string[], originalF
   }
 }
 
+// Store settings per user
+const userSettings: Record<number, { threads: number }> = {}
+
+const globalAny: any = globalThis;
+let currentLoopId = 0;
+
 // Start the bot
 export function startBot(): Promise<{ success: boolean; message: string }> {
   return new Promise((resolve) => {
-    if (isRunning) {
-      resolve({ success: true, message: 'Bot is already running' })
+    if (globalAny.botIsRunning) {
+      resolve({ success: false, message: 'Bot already running' })
       return
     }
 
-    isRunning = true;
+    globalAny.botIsRunning = true;
+    const loopId = Date.now();
+    currentLoopId = loopId;
+    globalAny.currentLoopId = loopId;
+    
+    let offset = 0;
 
     const sendMsg = async (chatId: number, text: string, options: any = {}) => {
       try {
@@ -350,7 +361,16 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
 2\\. The bot extracts ALL nested files\\.
 3\\. It checks cookies and reports valid ones\\.
 4\\. ✨ *New:* It auto\\-exports all valid cookies into a new file for you\\!
+5\\. 🎛️ Use \`/threads 10\` to speed up checking\\! (1-50 max)
 \n🛡️ Developer: *Yash*`);
+                } else if (text.startsWith('/threads ')) {
+                  const th = parseInt(text.split(' ')[1]);
+                  if (!isNaN(th) && th > 0 && th <= 50) {
+                    userSettings[chatId] = { threads: th };
+                    await sendMsg(chatId, `🚀 *Threads updated* to ${th}\\! Future files will be processed ${th} at a time\\.`);
+                  } else {
+                    await sendMsg(chatId, `❌ Please provide a valid number between 1 and 50\\.\nExample: \`/threads 10\``, { parse_mode: 'MarkdownV2' });
+                  }
                 } else if (text.startsWith('/check ')) {
                   const cookieText = text.slice(7).trim()
                   const { cookies } = parseCookieFile(cookieText, 'manual_input');
@@ -400,25 +420,33 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
                     if (initData.ok) progressMsgId = initData.result.message_id;
                   } catch (e) {}
 
+                  const maxThreads = userSettings[chatId]?.threads || 5; // default 5 threads
                   const validCookiesForExport: string[] = [];
                   let validCount = 0;
+                  let checkedCount = 0;
                   let lastUpdate = Date.now();
 
-                  for (let i = 0; i < cookies.length; i++) {
-                    const result = await checkSingleCookie(cookies[i]);
-                    if (result.valid) {
-                      validCount++;
-                      validCookiesForExport.push(formatExportResult(result.details));
-                    }
+                  for (let i = 0; i < cookies.length; i += maxThreads) {
+                    const chunk = cookies.slice(i, i + maxThreads);
+                    
+                    await Promise.all(chunk.map(async (cookie) => {
+                      const result = await checkSingleCookie(cookie);
+                      checkedCount++;
+                      if (result.valid) {
+                        validCount++;
+                        validCookiesForExport.push(formatExportResult(result.details));
+                      }
+                    }));
 
                     // Update live dashboard every 3 seconds or on last item
-                    if (progressMsgId && (Date.now() - lastUpdate > 3000 || i === cookies.length - 1)) {
+                    if (progressMsgId && (Date.now() - lastUpdate > 3000 || checkedCount === cookies.length)) {
                       lastUpdate = Date.now();
-                      const invalidCount = (i + 1) - validCount;
+                      const invalidCount = checkedCount - validCount;
                       const text = `🔄 *Live Checker Dashboard*
-\n📊 Checked: ${i + 1} / ${cookies.length}
+\n📊 Checked: ${checkedCount} / ${cookies.length}
 ✅ Valid: ${validCount}
 ❌ Invalid: ${invalidCount}
+🧵 Threads: ${maxThreads}
 \n_Checking in progress, please wait\\.\\.\\._`
                       
                       fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
