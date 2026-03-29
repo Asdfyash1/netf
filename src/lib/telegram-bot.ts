@@ -371,12 +371,14 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
                   } else {
                     await sendMsg(chatId, `❌ Please provide a valid number between 1 and 50\\.\nExample: \`/threads 10\``, { parse_mode: 'MarkdownV2' });
                   }
-                } else if (text.startsWith('/check ')) {
-                  const cookieText = text.slice(7).trim()
+                } else if (text.startsWith('/check ') || text.includes('NetflixId=')) {
+                  const cookieText = text.startsWith('/check ') ? text.slice(7).trim() : text.trim()
                   const { cookies } = parseCookieFile(cookieText, 'manual_input');
                   if (cookies.length > 0) {
                     const result = await checkSingleCookie(cookies[0]);
                     await sendMsg(chatId, formatResult(result));
+                  } else {
+                    await sendMsg(chatId, `❌ *Could not parse a valid cookie from your text\\.*`);
                   }
                 }
               }
