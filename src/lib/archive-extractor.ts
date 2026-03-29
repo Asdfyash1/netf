@@ -114,9 +114,102 @@ function detectFileType(buffer: Buffer): 'zip' | 'rar' | 'unknown' {
   return 'unknown';
 }
 
+import { execSync } from 'child_process';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { writeFileSync, readFileSync, readdirSync, statSync, rmSync, mkdirSync } from 'fs';
+
+function extractRar(buffer: Buffer, originalName: string, depth = 0): ExtractedFile[] {
+  const files: ExtractedFile[] = [];
+  if (depth > 5) return files;
+  
+  const tempId = `rar_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const tempDir = join(tmpdir(), tempId);
+  const rarPath = join(tempDir, 'temp.rar');
+  const extractDir = join(tempDir, 'extracted');
+  
+  try {
+    mkdirSync(extractDir, { recursive: true });
+    writeFileSync(rarPath, buffer);
+    
+    // Commands to try (Linux, Mac, Windows)
+    const commands = [
+      `unrar x -y "${rarPath}" "${extractDir}"`,
+      `7z x -y "${rarPath}" -o"${extractDir}"`,
+      `"C:\\Program Files\\WinRAR\\UnRAR.exe" x -y "${rarPath}" "${extractDir}"`,
+      `"C:\\Program Files\\7-Zip\\7z.exe" x -y "${rarPath}" -o"${extractDir}"`
+    ];
+    
+    let success = false;
+    for (const cmd of commands) {
+      try {
+        execSync(cmd, { stdio: 'ignore' });
+        success = true;
+        break;
+      } catch (e) {
+        continue;
+      }
+    }
+    
+    if (!success) {
+      console.log('Failed to extract RAR. No suitable unrar tool found on system.');
+      return [{
+        name: `${originalName}/error.txt`,
+        content: `⚠️ System missing UnRAR tool. \n\nIf you are on Railway, please add a nixpacks.toml file with ['unrar', 'p7zip-full'] packages.`
+      }];
+    }
+    
+    // Walk extracted folder
+    const walkDir = (dir: string, prefix: string = '') => {
+      const items = readdirSync(dir);
+      for (const item of items) {
+        if (item === 'temp.rar') continue;
+        const fullPath = join(dir, item);
+        if (statSync(fullPath).isDirectory()) {
+          walkDir(fullPath, `${prefix}${item}/`);
+        } else {
+          try {
+            const fileName = item.toLowerCase();
+            const textExtensions = ['.txt', '.json', '.csv', '.log', '.xml', '.html', '.htm', '.text', '.cookie', '.cookies', '.ini', '.cfg', '.data', '.md', '.yaml', '.yml', '.js', '.ts', '.py', '.css', '.sql', '.env', '.gitignore', '.sh', '.bat', '.ps1'];
+            
+            const contentBuffer = readFileSync(fullPath);
+            
+            if (fileName.endsWith('.rar')) {
+              files.push(...extractRar(contentBuffer, `${originalName}/${prefix}${item}`, depth + 1));
+            } else if (fileName.endsWith('.zip')) {
+              files.push(...extractFromZip(contentBuffer, `${originalName}/${prefix}${item}`, depth + 1));
+            } else {
+              const isTextFile = textExtensions.some(ext => fileName.endsWith(ext)) || fileName.indexOf('.') === -1;
+              if (isTextFile) {
+                const content = contentBuffer.toString('utf-8');
+                if (!content.includes('\0')) {
+                  files.push({ name: `${originalName}/${prefix}${item}`, content });
+                }
+              }
+            }
+          } catch(e) {
+            console.error(`Error reading nested file inside RAR:`, e);
+          }
+        }
+      }
+    };
+    
+    walkDir(extractDir);
+    
+  } catch (error) {
+    console.error('RAR extraction error:', error);
+  } finally {
+    try {
+      if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+    } catch(e) {}
+  }
+  
+  return files;
+}
+
 /**
  * Main extraction function - handles ZIP with nested archive support
- * Note: RAR files will return an error message on Vercel
+ * Note: RAR files will execute using system binaries
  */
 export function extractArchive(buffer: Buffer, fileName: string): ExtractedFile[] {
   const lowerName = fileName.toLowerCase();
@@ -124,13 +217,10 @@ export function extractArchive(buffer: Buffer, fileName: string): ExtractedFile[
   
   console.log(`extractArchive called: fileName=${fileName}, detectedType=${detectedType}, bufferSize=${buffer.length}`);
   
-  // RAR not supported on serverless generally without native binaries
+  // RAR supported using child_process and terminal tools
   if (lowerName.endsWith('.rar') || detectedType === 'rar') {
-    console.log(`RAR extraction not supported: ${fileName}`);
-    return [{
-      name: `${fileName}/error.txt`,
-      content: `⚠️ RAR files cannot be extracted directly by the bot. \n\n💡 TIP: Please extract the RAR on your device and send the .txt files or zip them into a .zip file and send again.`
-    }];
+    console.log(`Extracting RAR archive: ${fileName}`);
+    return extractRar(buffer, fileName, 0);
   }
   
   if (lowerName.endsWith('.zip') || detectedType === 'zip') {

