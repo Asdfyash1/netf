@@ -138,7 +138,7 @@ export default function NetflixCheckerPage() {
     try {
       const response = await fetch('/api/telegram?action=start')
       const data = await response.json()
-      if (data.success) {
+      if (data.success || data.status === 'running') {
         setBotStatus('running')
         toast({
           title: '🤖 Bot Started!',
@@ -405,8 +405,17 @@ export default function NetflixCheckerPage() {
     }
   }
 
+  if (!mounted) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black flex flex-col items-center justify-center text-white">
+        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-red-500 mb-4"></div>
+        <p className="text-gray-400 animate-pulse">Initializing Netflix Checker...</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black text-white p-4 md:p-8 relative overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black text-white p-4 md:p-8 relative overflow-hidden" suppressHydrationWarning>
       {mounted && <ParticlesBg />}
       
       <div className="absolute inset-0 bg-gradient-to-r from-red-500/5 via-transparent to-orange-500/5 animate-gradient-bg pointer-events-none" />

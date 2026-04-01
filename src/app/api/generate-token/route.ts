@@ -31,13 +31,7 @@ function extractSecureNetflixId(cookie: string): string | null {
   return match ? match[1].trim() : null
 }
 
-// Generate a time-based token signature
-function generateTokenSignature(netflixId: string): string {
-  const timestamp = Date.now().toString(36)
-  const randomPart = Buffer.from(Math.random().toString(36).substring(2)).toString('base64').slice(0, 8)
-  const hash = Buffer.from(`${netflixId.slice(0, 20)}${timestamp}`).toString('base64').slice(0, 16)
-  return `NF${timestamp}${randomPart}${hash}`.replace(/[+/=]/g, '').toUpperCase()
-}
+import { generateNFToken } from '@/lib/nftoken-generator'
 
 // Decode NetflixId to get account info
 function decodeNetflixId(netflixId: string): { email?: string; country?: string } {
@@ -82,18 +76,17 @@ export async function POST(request: NextRequest) {
     // Decode to get account info
     const accountInfo = decodeNetflixId(netflixId)
 
-    // Generate token
-    const token = generateTokenSignature(netflixId)
+    // Generate token Using Real API
+    const tokenResult = await generateNFToken(cookie)
+    const token = tokenResult.success ? tokenResult.token : undefined
+    const nftoken = token
 
     // Calculate expiry (Netflix tokens typically last 7 days)
     const expiresAt = new Date()
     expiresAt.setDate(expiresAt.getDate() + 7)
 
-    // Generate nftoken URL parameter
-    const nftoken = token
-
     return NextResponse.json({
-      success: true,
+      success: tokenResult.success,
       token,
       nftoken,
       netflixId,
