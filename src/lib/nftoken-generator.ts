@@ -31,28 +31,39 @@ const NETFLIX_HEADERS = {
  */
 export async function generateNFToken(cookieString: string): Promise<NFTokenResult> {
   try {
-    // Parse the cookie string to check what we have
-    const hasNetflixId = cookieString.includes('NetflixId=');
-    const hasSecureNetflixId = cookieString.includes('SecureNetflixId=');
-    const hasNfvdid = cookieString.includes('nfvdid=');
+    // Parse cookie string into a dict
+    const cookieDict: Record<string, string> = {};
+    const parts = cookieString.split(';');
+    for (const part of parts) {
+      const match = part.trim().match(/^([^=]+)=(.*)$/);
+      if (match) {
+        cookieDict[match[1]] = match[2];
+      }
+    }
+
+    // Check required cookies (NetflixId, SecureNetflixId, nfvdid)
+    const requiredCookies = ['NetflixId', 'SecureNetflixId', 'nfvdid'];
+    const missing = requiredCookies.filter(c => !(c in cookieDict));
     
-    if (!hasNetflixId) {
+    if (missing.length > 0) {
       return {
         success: false,
-        error: 'No NetflixId found in cookie'
+        error: `Missing required cookies: ${missing.join(', ')}`,
+        partial: true
       };
     }
-    
-    // Build complete cookie string if needed
-    let completeCookie = cookieString;
-    
-    // If we only have NetflixId, try to generate token anyway
-    // Some Netflix accounts can generate tokens with just NetflixId
-    if (!hasSecureNetflixId) {
-      console.log('Warning: Cookie missing SecureNetflixId, attempting token generation with NetflixId only');
+
+    // Build perfect cookie string matching Python's stealth profile
+    // Only send the exact cookies the Android API expects
+    const allowedKeys = ['NetflixId', 'SecureNetflixId', 'nfvdid', 'OptanonConsent'];
+    const finalCookieParts: string[] = [];
+    for (const key of allowedKeys) {
+      if (cookieDict[key]) {
+        finalCookieParts.push(`${key}=${cookieDict[key]}`);
+      }
     }
-    
-    // Build the GraphQL payload for CreateAutoLoginToken
+    const finalCookieStr = finalCookieParts.join('; ');
+
     const payload = {
       operationName: 'CreateAutoLoginToken',
       variables: {
@@ -74,7 +85,7 @@ export async function generateNFToken(cookieString: string): Promise<NFTokenResu
         method: 'POST',
         headers: {
           ...NETFLIX_HEADERS,
-          'Cookie': completeCookie
+          'Cookie': finalCookieStr
         },
         body: JSON.stringify(payload),
         signal: controller.signal
@@ -93,52 +104,21 @@ export async function generateNFToken(cookieString: string): Promise<NFTokenResu
             link: `https://netflix.com/?nftoken=${token}`
           };
         } else if (data?.errors) {
-          // Try alternative method if the first one fails
-          const errorMsg = Array.isArray(data.errors) 
-            ? data.errors.map((e: any) => e.message || JSON.stringify(e)).join('; ')
-            : JSON.stringify(data.errors);
-          
-          // Check if it's a "missing SecureNetflixId" type error
-          if (errorMsg.includes('authentication') || errorMsg.includes('credential') || errorMsg.includes('token')) {
-            // Try alternative API endpoint
-            const altResult = await tryAlternativeTokenGeneration(completeCookie);
-            if (altResult.success) {
-              return altResult;
-            }
-          }
-          
           return {
             success: false,
-            error: `Netflix API Error: ${errorMsg}`,
-            partial: !hasSecureNetflixId
+            error: `API Error: ${JSON.stringify(data.errors, null, 2)}`
           };
         } else {
           return {
             success: false,
-            error: 'Unexpected response from Netflix API',
-            partial: !hasSecureNetflixId
+            error: `Unexpected response: ${JSON.stringify(data)}`
           };
         }
-      } else if (response.status === 401 || response.status === 403) {
-        // Unauthorized - cookie is expired or invalid
-        return {
-          success: false,
-          error: 'Cookie expired or invalid (401/403)',
-          partial: !hasSecureNetflixId
-        };
-      } else if (response.status === 400) {
-        // Bad request - might be missing SecureNetflixId
+      } else {
         const text = await response.text();
         return {
           success: false,
-          error: `Bad request (400): ${text.substring(0, 200)}`,
-          partial: !hasSecureNetflixId
-        };
-      } else {
-        return {
-          success: false,
-          error: `HTTP ${response.status}`,
-          partial: !hasSecureNetflixId
+          error: `HTTP ${response.status}: ${text.substring(0, 200)}`
         };
       }
     } catch (fetchError) {
@@ -147,16 +127,18 @@ export async function generateNFToken(cookieString: string): Promise<NFTokenResu
       if (fetchError instanceof Error && fetchError.name === 'AbortError') {
         return {
           success: false,
-          error: 'Request timeout',
-          partial: !hasSecureNetflixId
+          error: 'Request timeout'
         };
       }
-      throw fetchError;
+      return {
+        success: false,
+        error: `Request error: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`
+      };
     }
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
+      error: `Unexpected error: ${error instanceof Error ? error.message : String(error)}`
     };
   }
 }

